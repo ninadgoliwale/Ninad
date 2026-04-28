@@ -1,7 +1,6 @@
 import http from 'http';
 import Database from 'better-sqlite3';
 
-// ============ CONFIGURATION ============
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_ID = parseInt(process.env.OWNER_ID);
 const PORT = process.env.PORT || 3000;
@@ -11,7 +10,6 @@ if (!OWNER_ID) throw new Error("OWNER_ID required");
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-// ============ DATABASE SETUP ============
 const db = new Database('bot_data.db');
 
 db.exec(`
@@ -31,21 +29,6 @@ db.exec(`
     user_id INTEGER,
     chat_id INTEGER,
     count INTEGER DEFAULT 0,
-    PRIMARY KEY (user_id, chat_id)
-  );
-  
-  CREATE TABLE IF NOT EXISTS message_tracker (
-    user_id INTEGER,
-    chat_id INTEGER,
-    count INTEGER DEFAULT 1,
-    first_ts INTEGER,
-    PRIMARY KEY (user_id, chat_id)
-  );
-  
-  CREATE TABLE IF NOT EXISTS banned_users (
-    user_id INTEGER,
-    chat_id INTEGER,
-    reason TEXT,
     PRIMARY KEY (user_id, chat_id)
   );
   
@@ -74,21 +57,12 @@ db.exec(`
     banned_by INTEGER,
     banned_at INTEGER
   );
-  
-  CREATE TABLE IF NOT EXISTS approved_groups (
-    chat_id INTEGER PRIMARY KEY,
-    added_by INTEGER,
-    added_at INTEGER
-  );
 `);
 
-// Initialize stats
-const statsInit = db.prepare(`INSERT OR IGNORE INTO bot_stats (key, value) VALUES (?, 0)`);
-statsInit.run('total_users');
-statsInit.run('total_groups');
-statsInit.run('total_commands');
+db.prepare(`INSERT OR IGNORE INTO bot_stats (key, value) VALUES (?, 0)`).run('total_users');
+db.prepare(`INSERT OR IGNORE INTO bot_stats (key, value) VALUES (?, 0)`).run('total_groups');
+db.prepare(`INSERT OR IGNORE INTO bot_stats (key, value) VALUES (?, 0)`).run('total_commands');
 
-// ============ HELPER FUNCTIONS ============
 async function telegram(method, payload) {
   const response = await fetch(`${TELEGRAM_API}/${method}`, {
     method: "POST",
@@ -96,7 +70,7 @@ async function telegram(method, payload) {
     body: JSON.stringify(payload),
   });
   const data = await response.json();
-  if (!data.ok) throw new Error(`${method} failed: ${JSON.stringify(data)}`);
+  if (!data.ok) throw new Error(`${method} failed`);
   return data.result;
 }
 
@@ -149,7 +123,6 @@ function updateStat(key, increment = 1) {
   db.prepare(`UPDATE bot_stats SET value = value + ? WHERE key = ?`).run(increment, key);
 }
 
-// ============ ESCROW FEE CALCULATION ============
 function calculateFee(amount) {
   if (amount < 190) return 5;
   if (amount <= 599) return 10;
@@ -172,21 +145,12 @@ function extractAmount(text) {
 function getFeeMessage(amount) {
   const fee = calculateFee(amount);
   const total = amount + fee;
-  return [
-    `🏦 **SHAYAMxESCROW**`,
-    ``,
-    `💰 **Deal Amount:** ${formatRupees(amount)}`,
-    `📝 **Escrow Fee:** ${formatRupees(fee)}`,
-    `💵 **Total Payable:** ${formatRupees(total)}`,
-    ``,
-    `_RG: @SHAYAMxESCROW_`
-  ].join("\n");
+  return `🏦 **SHAYAMxESCROW**\n\n💰 **Deal Amount:** ${formatRupees(amount)}\n📝 **Escrow Fee:** ${formatRupees(fee)}\n💵 **Total Payable:** ${formatRupees(total)}\n\n_RG: @SHAYAMxESCROW_`;
 }
 
-// ============ ANTI-FLOOD SYSTEM ============
 const userMessageCache = new Map();
 
-async function checkFlood(chatId, userId, messageId) {
+async function checkFlood(chatId, userId) {
   if (isSudo(userId)) return false;
   const settings = db.prepare('SELECT anti_flood, flood_action FROM group_settings WHERE chat_id = ?').get(chatId);
   if (!settings || settings.anti_flood === 0) return false;
@@ -209,14 +173,14 @@ async function checkFlood(chatId, userId, messageId) {
     const action = settings.flood_action;
     if (action === 'mute') {
       await restrictUser(chatId, userId, now + 60, false);
-      await sendMessage(chatId, `🚫 User has been muted for 60 seconds due to flooding.`);
+      await sendMessage(chatId, `🚫 User muted for 60 seconds due to flooding.`);
     } else if (action === 'kick') {
       await kickUser(chatId, userId);
       await unbanUser(chatId, userId);
-      await sendMessage(chatId, `👢 User has been kicked for flooding.`);
+      await sendMessage(chatId, `👢 User kicked for flooding.`);
     } else if (action === 'ban') {
       await kickUser(chatId, userId);
-      await sendMessage(chatId, `🔨 User has been banned for flooding.`);
+      await sendMessage(chatId, `🔨 User banned for flooding.`);
     }
     userMessageCache.delete(key);
     return true;
@@ -224,66 +188,21 @@ async function checkFlood(chatId, userId, messageId) {
   return false;
 }
 
-// ============ COMMAND HANDLERS ============
-
 async function handleStart(chatId, userId, msgId) {
   updateStat('total_users');
-  
-  const welcomeText = [
-    `✨ **SHAYAMxESCROW Bot** ✨`,
-    ``,
-    `I calculate escrow fees and manage groups like MissRose!`,
-    ``,
-    `**💰 Escrow:** Send any number or /fee 500`,
-    `**👑 Admin:** /ban, /kick, /mute, /warn, /purge`,
-    `**⚙️ Config:** /settings, /filter, /setflood`,
-    `**📊 Owner:** /owner`,
-    ``,
-    `Type /help for complete command list!`,
-    ``,
-    `👨‍💻 **Developer:** @clerkMM, @auramanxhere`
-  ].join("\n");
-  await sendMessage(chatId, welcomeText, msgId, "Markdown");
+  const text = `✨ **SHAYAMxESCROW Bot** ✨\n\nI calculate escrow fees and manage groups!\n\n**💰 Escrow:** Send any number or /fee 500\n**👑 Admin:** /ban, /kick, /mute, /warn\n**⚙️ Config:** /settings, /filter\n**📊 Owner:** /owner\n\nType /help for commands!\n\n👨‍💻 **Developer:** @clerkMM, @auramanxhere`;
+  await sendMessage(chatId, text, msgId, "Markdown");
 }
 
 async function handleHelp(chatId, userId, msgId) {
   const isSudoUser = isSudo(userId);
-  
-  let helpText = [
-    `📚 **SHAYAMxESCROW Help**`,
-    ``,
-    `**💰 Escrow:**`,
-    `• /fee <amount> - Calculate fee`,
-    ``,
-    `**👑 Admin:**`,
-    `• /ban, /kick, /mute, /unmute`,
-    `• /warn, /warns, /resetwarns`,
-    `• /purge, /adminlist, /admins`,
-    `• /filter, /filters, /stop`,
-    ``,
-    `**⚙️ Settings:**`,
-    `• /settings, /setflood, /setfloodaction`,
-    `• /setwelcome, /setgoodbye`,
-    ``
-  ];
+  let text = `📚 **SHAYAMxESCROW Help**\n\n**💰 Escrow:**\n• /fee <amount> - Calculate fee\n\n**👑 Admin:**\n• /ban, /kick, /mute, /unmute\n• /warn, /warns, /resetwarns\n• /purge, /adminlist, /admins\n• /filter, /filters, /stop\n\n**⚙️ Settings:**\n• /settings, /setflood, /setfloodaction\n• /setwelcome, /setgoodbye`;
   
   if (isSudoUser) {
-    helpText.push(...[
-      ``,
-      `**👑 Owner Panel:**`,
-      `• /owner - Open owner panel`,
-      `• /stats - Bot statistics`,
-      `• /sudo - Manage sudo admins`,
-      `• /broadcast - Send global message`,
-      `• /globalban - Ban user from all groups`,
-      `• /gclist - List all groups`,
-      `• /leave - Leave a group`,
-      `• /restart - Restart bot`
-    ]);
+    text += `\n\n**👑 Owner Panel:**\n• /owner - Owner panel\n• /stats - Bot stats\n• /sudo - Manage sudo\n• /broadcast - Global message\n• /globalban - Ban from all groups\n• /gclist - List groups\n• /leave - Leave group\n• /restart - Restart bot`;
   }
-  
-  helpText.push(``, `_RG: @SHAYAMxESCROW_`);
-  await sendMessage(chatId, helpText.join("\n"), msgId, "Markdown");
+  text += `\n\n_RG: @SHAYAMxESCROW_`;
+  await sendMessage(chatId, text, msgId, "Markdown");
 }
 
 async function handleFee(chatId, amount, msgId) {
@@ -296,8 +215,8 @@ async function handleFee(chatId, amount, msgId) {
 }
 
 async function handleOwnerPanel(chatId, userId, msgId) {
-  if (userId !== OWNER_ID && !isSudo(userId)) {
-    await sendMessage(chatId, "❌ You are not authorized to use this command.", msgId);
+  if (!isSudo(userId)) {
+    await sendMessage(chatId, "❌ You are not authorized.", msgId);
     return;
   }
   
@@ -305,189 +224,123 @@ async function handleOwnerPanel(chatId, userId, msgId) {
   const totalGroups = db.prepare(`SELECT value FROM bot_stats WHERE key = 'total_groups'`).get()?.value || 0;
   const totalCommands = db.prepare(`SELECT value FROM bot_stats WHERE key = 'total_commands'`).get()?.value || 0;
   const sudoCount = db.prepare(`SELECT COUNT(*) as count FROM sudo_users`).get().count;
-  const globalBans = db.prepare(`SELECT COUNT(*) as count FROM global_bans`).get().count;
   
-  const panel = [
-    `👑 **OWNER CONTROL PANEL**`,
-    ``,
-    `📊 **Bot Statistics:**`,
-    `• Users: ${totalUsers}`,
-    `• Groups: ${totalGroups}`,
-    `• Commands: ${totalCommands}`,
-    `• Sudo Admins: ${sudoCount}`,
-    `• Global Bans: ${globalBans}`,
-    ``,
-    `🛠️ **Available Commands:**`,
-    `• /broadcast - Send message to all users`,
-    `• /stats - View bot statistics`,
-    `• /sudo - Manage sudo users`,
-    `• /globalban - Global ban a user`,
-    `• /globalunban - Remove global ban`,
-    `• /leave - Leave a group`,
-    `• /gclist - List all groups`,
-    `• /getlink - Get group invite link`,
-    `• /restart - Restart the bot`,
-    ``,
-    `📈 **Bot Status:** 🟢 Online`,
-    `👨‍💻 **Developer:** @clerkMM, @auramanxhere`
-  ].join("\n");
-  
-  await sendMessage(chatId, panel, msgId, "Markdown");
+  const text = `👑 **OWNER CONTROL PANEL**\n\n📊 **Bot Stats:**\n• Users: ${totalUsers}\n• Groups: ${totalGroups}\n• Commands: ${totalCommands}\n• Sudo Admins: ${sudoCount}\n\n🛠️ **Commands:**\n• /broadcast - Send global message\n• /stats - View stats\n• /sudo - Manage sudo\n• /globalban - Global ban\n• /gclist - List groups\n• /leave - Leave group\n• /restart - Restart bot\n\n📈 **Status:** 🟢 Online\n👨‍💻 **Developer:** @clerkMM, @auramanxhere`;
+  await sendMessage(chatId, text, msgId, "Markdown");
 }
 
 async function handleBroadcast(chatId, userId, message, msgId) {
-  if (userId !== OWNER_ID && !isSudo(userId)) {
-    await sendMessage(chatId, "❌ Owner only command.", msgId);
+  if (!isSudo(userId)) {
+    await sendMessage(chatId, "❌ Sudo only.", msgId);
     return;
   }
-  
   if (!message) {
     await sendMessage(chatId, "Usage: `/broadcast <message>`", msgId);
     return;
   }
   
-  await sendMessage(chatId, "📢 Broadcasting message... This may take a while.", msgId);
-  
-  const chats = new Set();
+  await sendMessage(chatId, "📢 Broadcasting...", msgId);
   const groups = db.prepare(`SELECT chat_id FROM group_settings`).all();
-  groups.forEach(g => chats.add(g.chat_id));
+  let success = 0, failed = 0;
   
-  let success = 0;
-  let failed = 0;
-  
-  for (const chat of chats) {
+  for (const group of groups) {
     try {
-      await sendMessage(chat, message, null, "Markdown");
+      await sendMessage(group.chat_id, message, null, "Markdown");
       success++;
       await new Promise(r => setTimeout(r, 50));
     } catch {
       failed++;
     }
   }
-  
-  await sendMessage(chatId, `✅ Broadcast complete!\nSuccess: ${success}\nFailed: ${failed}`, msgId);
+  await sendMessage(chatId, `✅ Broadcast done!\nSuccess: ${success}\nFailed: ${failed}`, msgId);
 }
 
 async function handleStats(chatId, userId, msgId) {
-  if (userId !== OWNER_ID && !isSudo(userId)) {
-    await sendMessage(chatId, "❌ Admin only command.", msgId);
+  if (!isSudo(userId)) {
+    await sendMessage(chatId, "❌ Sudo only.", msgId);
     return;
   }
   
   const stats = {
-    totalUsers: db.prepare(`SELECT value FROM bot_stats WHERE key = 'total_users'`).get()?.value || 0,
-    totalGroups: db.prepare(`SELECT value FROM bot_stats WHERE key = 'total_groups'`).get()?.value || 0,
-    totalCommands: db.prepare(`SELECT value FROM bot_stats WHERE key = 'total_commands'`).get()?.value || 0,
-    sudoCount: db.prepare(`SELECT COUNT(*) as count FROM sudo_users`).get().count,
-    globalBans: db.prepare(`SELECT COUNT(*) as count FROM global_bans`).get().count,
-    activeGroups: db.prepare(`SELECT COUNT(*) as count FROM group_settings`).get().count,
-    filtersCount: db.prepare(`SELECT COUNT(*) as count FROM filters`).get().count,
-    warningsCount: db.prepare(`SELECT COUNT(*) as count FROM user_warnings`).get().count
+    users: db.prepare(`SELECT value FROM bot_stats WHERE key = 'total_users'`).get()?.value || 0,
+    groups: db.prepare(`SELECT value FROM bot_stats WHERE key = 'total_groups'`).get()?.value || 0,
+    cmds: db.prepare(`SELECT value FROM bot_stats WHERE key = 'total_commands'`).get()?.value || 0,
+    sudo: db.prepare(`SELECT COUNT(*) as count FROM sudo_users`).get().count,
+    filters: db.prepare(`SELECT COUNT(*) as count FROM filters`).get().count
   };
   
-  const statsMsg = [
-    `📊 **SHAYAMxESCROW Bot Statistics**`,
-    ``,
-    `**Bot Info:**`,
-    `• Uptime: ${Math.floor(process.uptime() / 60)} minutes`,
-    `• Node Version: ${process.version}`,
-    ``,
-    `**Database Stats:**`,
-    `• Total Users: ${stats.totalUsers}`,
-    `• Total Groups: ${stats.totalGroups}`,
-    `• Active Groups: ${stats.activeGroups}`,
-    `• Commands Used: ${stats.totalCommands}`,
-    `• Sudo Admins: ${stats.sudoCount}`,
-    `• Global Bans: ${stats.globalBans}`,
-    `• Active Filters: ${stats.filtersCount}`,
-    `• Total Warnings: ${stats.warningsCount}`,
-    ``,
-    `**Memory Usage:**`,
-    `• ${Math.round(process.memoryUsage().rss / 1024 / 1024)} MB`,
-    ``,
-    `👨‍💻 **Developer:** @clerkMM, @auramanxhere`
-  ].join("\n");
-  
-  await sendMessage(chatId, statsMsg, msgId, "Markdown");
+  const text = `📊 **Bot Statistics**\n\n• Users: ${stats.users}\n• Groups: ${stats.groups}\n• Commands Used: ${stats.cmds}\n• Sudo Admins: ${stats.sudo}\n• Active Filters: ${stats.filters}\n• Uptime: ${Math.floor(process.uptime() / 60)} min\n• Memory: ${Math.round(process.memoryUsage().rss / 1024 / 1024)} MB\n\n👨‍💻 **Developer:** @clerkMM, @auramanxhere`;
+  await sendMessage(chatId, text, msgId, "Markdown");
 }
 
 async function handleSudo(chatId, userId, action, targetId, msgId) {
   if (userId !== OWNER_ID) {
-    await sendMessage(chatId, "❌ Only the bot owner can manage sudo users.", msgId);
+    await sendMessage(chatId, "❌ Owner only.", msgId);
     return;
   }
   
   if (!action || !targetId) {
     const sudoList = db.prepare(`SELECT user_id FROM sudo_users`).all();
-    const sudoMentions = sudoList.map(s => `• \`${s.user_id}\``).join("\n");
-    await sendMessage(chatId, `**Sudo Users:**\n${sudoMentions || "None"}\n\nUsage:\n• /sudo add <user_id>\n• /sudo remove <user_id>`, msgId, "Markdown");
+    const list = sudoList.map(s => `• \`${s.user_id}\``).join("\n") || "None";
+    await sendMessage(chatId, `**Sudo Users:**\n${list}\n\nUsage:\n/sudo add <id>\n/sudo remove <id>`, msgId, "Markdown");
     return;
   }
   
   const target = parseInt(targetId);
-  
   if (action === 'add') {
     if (target === OWNER_ID) {
-      await sendMessage(chatId, "❌ Owner is already sudo by default.", msgId);
+      await sendMessage(chatId, "❌ Owner is already sudo.", msgId);
       return;
     }
     db.prepare(`INSERT OR IGNORE INTO sudo_users (user_id) VALUES (?)`).run(target);
     await sendMessage(chatId, `✅ Added \`${target}\` as sudo admin.`, msgId, "Markdown");
   } else if (action === 'remove') {
     db.prepare(`DELETE FROM sudo_users WHERE user_id = ?`).run(target);
-    await sendMessage(chatId, `✅ Removed \`${target}\` from sudo users.`, msgId, "Markdown");
-  } else {
-    await sendMessage(chatId, "Invalid action. Use `add` or `remove`.", msgId);
+    await sendMessage(chatId, `✅ Removed \`${target}\` from sudo.`, msgId, "Markdown");
   }
 }
 
 async function handleGlobalBan(chatId, userId, targetId, reason, msgId) {
-  if (userId !== OWNER_ID && !isSudo(userId)) {
-    await sendMessage(chatId, "❌ Sudo only command.", msgId);
+  if (!isSudo(userId)) {
+    await sendMessage(chatId, "❌ Sudo only.", msgId);
     return;
   }
-  
   if (!targetId) {
     await sendMessage(chatId, "Usage: `/globalban <user_id> <reason>`", msgId);
     return;
   }
   
   const target = parseInt(targetId);
-  
   db.prepare(`INSERT OR REPLACE INTO global_bans (user_id, reason, banned_by, banned_at) VALUES (?, ?, ?, ?)`).run(target, reason || "No reason", userId, Date.now());
   
   const groups = db.prepare(`SELECT chat_id FROM group_settings`).all();
-  let kickedCount = 0;
-  
+  let count = 0;
   for (const group of groups) {
     try {
       await kickUser(group.chat_id, target);
-      kickedCount++;
+      count++;
       await new Promise(r => setTimeout(r, 100));
     } catch {}
   }
-  
-  await sendMessage(chatId, `✅ Globally banned \`${target}\`\nReason: ${reason || "No reason"}\nKicked from ${kickedCount} groups.`, msgId, "Markdown");
+  await sendMessage(chatId, `✅ Globally banned \`${target}\`\nKicked from ${count} groups.`, msgId, "Markdown");
 }
 
 async function handleGlobalUnban(chatId, userId, targetId, msgId) {
-  if (userId !== OWNER_ID && !isSudo(userId)) {
-    await sendMessage(chatId, "❌ Sudo only command.", msgId);
+  if (!isSudo(userId)) {
+    await sendMessage(chatId, "❌ Sudo only.", msgId);
     return;
   }
-  
   if (!targetId) {
     await sendMessage(chatId, "Usage: `/globalunban <user_id>`", msgId);
     return;
   }
-  
   db.prepare(`DELETE FROM global_bans WHERE user_id = ?`).run(parseInt(targetId));
   await sendMessage(chatId, `✅ Removed global ban for \`${targetId}\`.`, msgId, "Markdown");
 }
 
 async function handleGroupList(chatId, userId, msgId) {
-  if (userId !== OWNER_ID && !isSudo(userId)) {
-    await sendMessage(chatId, "❌ Sudo only command.", msgId);
+  if (!isSudo(userId)) {
+    await sendMessage(chatId, "❌ Sudo only.", msgId);
     return;
   }
   
@@ -498,7 +351,7 @@ async function handleGroupList(chatId, userId, msgId) {
   }
   
   let list = "**📋 Groups List:**\n\n";
-  for (let i = 0; i < Math.min(groups.length, 20); i++) {
+  for (let i = 0; i < Math.min(groups.length, 15); i++) {
     try {
       const chat = await telegram("getChat", { chat_id: groups[i].chat_id });
       list += `${i+1}. ${chat.title} - \`${chat.id}\`\n`;
@@ -506,83 +359,50 @@ async function handleGroupList(chatId, userId, msgId) {
       list += `${i+1}. Unknown - \`${groups[i].chat_id}\`\n`;
     }
   }
-  
-  if (groups.length > 20) {
-    list += `\n... and ${groups.length - 20} more groups.`;
-  }
-  
+  if (groups.length > 15) list += `\n... and ${groups.length - 15} more.`;
   await sendMessage(chatId, list, msgId, "Markdown");
 }
 
-async function handleGetLink(chatId, userId, targetChatId, msgId) {
-  if (userId !== OWNER_ID && !isSudo(userId)) {
-    await sendMessage(chatId, "❌ Sudo only command.", msgId);
-    return;
-  }
-  
-  const chat_id = targetChatId || chatId;
-  try {
-    const link = await telegram("exportChatInviteLink", { chat_id });
-    await sendMessage(chatId, `🔗 Invite link: ${link}`, msgId);
-  } catch {
-    await sendMessage(chatId, "Failed to get invite link. Make sure I'm admin.", msgId);
-  }
-}
-
 async function handleLeave(chatId, userId, targetChatId, msgId) {
-  if (userId !== OWNER_ID && !isSudo(userId)) {
-    await sendMessage(chatId, "❌ Sudo only command.", msgId);
+  if (!isSudo(userId)) {
+    await sendMessage(chatId, "❌ Sudo only.", msgId);
     return;
   }
-  
-  const leaveChatId = targetChatId || chatId;
-  await sendMessage(chatId, `👋 Leaving chat ${leaveChatId}...`, msgId);
-  await leaveChat(leaveChatId);
-  db.prepare(`DELETE FROM group_settings WHERE chat_id = ?`).run(leaveChatId);
+  const leaveId = targetChatId || chatId;
+  await sendMessage(chatId, `👋 Leaving...`, msgId);
+  await leaveChat(leaveId);
+  db.prepare(`DELETE FROM group_settings WHERE chat_id = ?`).run(leaveId);
 }
 
 async function handleRestart(chatId, userId, msgId) {
   if (userId !== OWNER_ID) {
-    await sendMessage(chatId, "❌ Owner only command.", msgId);
+    await sendMessage(chatId, "❌ Owner only.", msgId);
     return;
   }
-  
-  await sendMessage(chatId, "🔄 Restarting bot...", msgId);
+  await sendMessage(chatId, "🔄 Restarting...", msgId);
   process.exit(0);
 }
-
-// ============ GROUP MANAGEMENT COMMANDS ============
 
 async function handleAdminList(chatId, msgId) {
   try {
     const admins = await telegram("getChatAdministrators", { chat_id: chatId });
-    const adminList = admins.map(a => `👑 ${a.user.first_name} (${a.user.id})`).join("\n");
-    await sendMessage(chatId, `**Admins in this group:**\n\n${adminList}`, msgId, "Markdown");
+    const list = admins.map(a => `👑 ${a.user.first_name} (${a.user.id})`).join("\n");
+    await sendMessage(chatId, `**Admins:**\n${list}`, msgId, "Markdown");
   } catch {
-    await sendMessage(chatId, "Failed to get admin list. Make sure I'm admin.", msgId);
-  }
-}
-
-async function handleMentionAdmins(chatId, msgId) {
-  try {
-    const admins = await telegram("getChatAdministrators", { chat_id: chatId });
-    const mentions = admins.map(a => `@${a.user.username || a.user.first_name}`).join(" ");
-    await sendMessage(chatId, `📢 Calling admins: ${mentions}`, msgId);
-  } catch {
-    await sendMessage(chatId, "Failed to mention admins.", msgId);
+    await sendMessage(chatId, "Failed to get admin list.", msgId);
   }
 }
 
 async function handleBan(chatId, userId, targetId, reason, msgId) {
   if (!await isAdmin(chatId, userId)) {
-    await sendMessage(chatId, "❌ You need to be an admin to use this command.", msgId);
+    await sendMessage(chatId, "❌ Admin only.", msgId);
     return;
   }
   try {
     await kickUser(chatId, targetId);
-    await sendMessage(chatId, `🔨 User banned. Reason: ${reason || "No reason provided"}`, msgId);
+    await sendMessage(chatId, `🔨 Banned. Reason: ${reason || "No reason"}`, msgId);
   } catch {
-    await sendMessage(chatId, "Failed to ban user. Check my permissions.", msgId);
+    await sendMessage(chatId, "Failed to ban user.", msgId);
   }
 }
 
@@ -594,22 +414,21 @@ async function handleKick(chatId, userId, targetId, msgId) {
   try {
     await kickUser(chatId, targetId);
     await unbanUser(chatId, targetId);
-    await sendMessage(chatId, `👢 User kicked.`, msgId);
+    await sendMessage(chatId, `👢 Kicked.`, msgId);
   } catch {
     await sendMessage(chatId, "Failed to kick user.", msgId);
   }
 }
 
-async function handleMute(chatId, userId, targetId, duration = 3600, msgId) {
+async function handleMute(chatId, userId, targetId, msgId) {
   if (!await isAdmin(chatId, userId)) {
     await sendMessage(chatId, "❌ Admin only.", msgId);
     return;
   }
   try {
-    const until = Math.floor(Date.now() / 1000) + duration;
+    const until = Math.floor(Date.now() / 1000) + 3600;
     await restrictUser(chatId, targetId, until, false);
-    db.prepare(`INSERT OR REPLACE INTO muted_users (user_id, chat_id, until) VALUES (?, ?, ?)`).run(targetId, chatId, until);
-    await sendMessage(chatId, `🔇 User muted for ${duration / 60} minutes.`, msgId);
+    await sendMessage(chatId, `🔇 Muted for 60 minutes.`, msgId);
   } catch {
     await sendMessage(chatId, "Failed to mute user.", msgId);
   }
@@ -622,8 +441,7 @@ async function handleUnmute(chatId, userId, targetId, msgId) {
   }
   try {
     await restrictUser(chatId, targetId, 0, true);
-    db.prepare(`DELETE FROM muted_users WHERE user_id = ? AND chat_id = ?`).run(targetId, chatId);
-    await sendMessage(chatId, `🔊 User unmuted.`, msgId);
+    await sendMessage(chatId, `🔊 Unmuted.`, msgId);
   } catch {
     await sendMessage(chatId, "Failed to unmute user.", msgId);
   }
@@ -637,15 +455,13 @@ async function handleWarn(chatId, userId, targetId, reason, msgId) {
   
   let warning = db.prepare(`SELECT count FROM user_warnings WHERE user_id = ? AND chat_id = ?`).get(targetId, chatId);
   let newCount = (warning?.count || 0) + 1;
-  
   db.prepare(`INSERT OR REPLACE INTO user_warnings (user_id, chat_id, count) VALUES (?, ?, ?)`).run(targetId, chatId, newCount);
-  
-  await sendMessage(chatId, `⚠️ User warned! (${newCount}/3 warnings)\nReason: ${reason || "No reason"}`, msgId);
+  await sendMessage(chatId, `⚠️ Warned! (${newCount}/3)\nReason: ${reason || "No reason"}`, msgId);
   
   if (newCount >= 3) {
     await kickUser(chatId, targetId);
     db.prepare(`DELETE FROM user_warnings WHERE user_id = ? AND chat_id = ?`).run(targetId, chatId);
-    await sendMessage(chatId, `🔨 User has been banned for exceeding 3 warnings.`, msgId);
+    await sendMessage(chatId, `🔨 Banned for exceeding 3 warnings.`, msgId);
   }
 }
 
@@ -661,7 +477,7 @@ async function handleResetWarns(chatId, userId, targetId, msgId) {
     return;
   }
   db.prepare(`DELETE FROM user_warnings WHERE user_id = ? AND chat_id = ?`).run(targetId, chatId);
-  await sendMessage(chatId, `✅ User warnings reset.`, msgId);
+  await sendMessage(chatId, `✅ Warnings reset.`, msgId);
 }
 
 async function handlePurge(chatId, userId, count, msgId) {
@@ -669,11 +485,12 @@ async function handlePurge(chatId, userId, count, msgId) {
     await sendMessage(chatId, "❌ Admin only.", msgId);
     return;
   }
-  if (!count || count < 1 || count > 100) {
-    await sendMessage(chatId, "Please provide a number between 1-100. Example: `/purge 50`", msgId);
+  const num = parseInt(count);
+  if (!num || num < 1 || num > 100) {
+    await sendMessage(chatId, "Usage: `/purge 1-100`", msgId);
     return;
   }
-  await sendMessage(chatId, `🗑️ Deleting ${count} messages...`, msgId);
+  await sendMessage(chatId, `🗑️ Deleting ${num} messages...`, msgId);
 }
 
 async function handleAddFilter(chatId, userId, keyword, response, msgId) {
@@ -692,11 +509,11 @@ async function handleAddFilter(chatId, userId, keyword, response, msgId) {
 async function handleListFilters(chatId, msgId) {
   const filters = db.prepare(`SELECT keyword FROM filters WHERE chat_id = ?`).all(chatId);
   if (filters.length === 0) {
-    await sendMessage(chatId, "No filters set in this group.", msgId);
+    await sendMessage(chatId, "No filters.", msgId);
     return;
   }
   const list = filters.map(f => `• ${f.keyword}`).join("\n");
-  await sendMessage(chatId, `**Active filters:**\n${list}`, msgId);
+  await sendMessage(chatId, `**Filters:**\n${list}`, msgId);
 }
 
 async function handleStopFilter(chatId, userId, keyword, msgId) {
@@ -708,7 +525,7 @@ async function handleStopFilter(chatId, userId, keyword, msgId) {
   if (result.changes > 0) {
     await sendMessage(chatId, `✅ Filter "${keyword}" removed.`, msgId);
   } else {
-    await sendMessage(chatId, `Filter "${keyword}" not found.`, msgId);
+    await sendMessage(chatId, `Filter not found.`, msgId);
   }
 }
 
@@ -722,22 +539,8 @@ async function handleSettings(chatId, userId, msgId) {
   const flood = settings?.anti_flood || 5;
   const action = settings?.flood_action || 'mute';
   
-  const settingsText = [
-    `⚙️ **Group Settings**`,
-    ``,
-    `🛡️ **Anti-Flood:** ${flood} msgs/5sec (0=disabled)`,
-    `🎯 **Flood Action:** ${action}`,
-    `👋 **Welcome:** ${settings?.welcome_msg ? '✅ Set' : '❌ Not set'}`,
-    `👋 **Goodbye:** ${settings?.goodbye_msg ? '✅ Set' : '❌ Not set'}`,
-    ``,
-    `**Commands to modify:**`,
-    `• /setflood <count>`,
-    `• /setfloodaction <mute/kick/ban>`,
-    `• /setwelcome <text>`,
-    `• /setgoodbye <text>`
-  ].join("\n");
-  
-  await sendMessage(chatId, settingsText, msgId, "Markdown");
+  const text = `⚙️ **Group Settings**\n\n🛡️ Anti-Flood: ${flood} msgs/5sec\n🎯 Flood Action: ${action}\n👋 Welcome: ${settings?.welcome_msg ? '✅' : '❌'}\n👋 Goodbye: ${settings?.goodbye_msg ? '✅' : '❌'}\n\nCommands:\n/setflood <count>\n/setfloodaction <mute/kick/ban>\n/setwelcome <text>\n/setgoodbye <text>`;
+  await sendMessage(chatId, text, msgId, "Markdown");
 }
 
 async function handleSetFlood(chatId, userId, limit, msgId) {
@@ -745,13 +548,13 @@ async function handleSetFlood(chatId, userId, limit, msgId) {
     await sendMessage(chatId, "❌ Admin only.", msgId);
     return;
   }
-  const floodLimit = parseInt(limit);
-  if (isNaN(floodLimit) || floodLimit < 0) {
-    await sendMessage(chatId, "Please provide a valid number (0 to disable).", msgId);
+  const num = parseInt(limit);
+  if (isNaN(num) || num < 0) {
+    await sendMessage(chatId, "Provide a valid number (0 to disable).", msgId);
     return;
   }
-  db.prepare(`INSERT OR REPLACE INTO group_settings (chat_id, anti_flood) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET anti_flood = excluded.anti_flood`).run(chatId, floodLimit);
-  await sendMessage(chatId, `✅ Anti-flood set to ${floodLimit} messages per 5 seconds.`, msgId);
+  db.prepare(`INSERT OR REPLACE INTO group_settings (chat_id, anti_flood) VALUES (?, ?)`).run(chatId, num);
+  await sendMessage(chatId, `✅ Anti-flood set to ${num}.`, msgId);
 }
 
 async function handleSetFloodAction(chatId, userId, action, msgId) {
@@ -760,10 +563,10 @@ async function handleSetFloodAction(chatId, userId, action, msgId) {
     return;
   }
   if (!['mute', 'kick', 'ban'].includes(action)) {
-    await sendMessage(chatId, "Invalid action. Use: `mute`, `kick`, or `ban`", msgId);
+    await sendMessage(chatId, "Use: mute, kick, or ban", msgId);
     return;
   }
-  db.prepare(`INSERT OR REPLACE INTO group_settings (chat_id, flood_action) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET flood_action = excluded.flood_action`).run(chatId, action);
+  db.prepare(`INSERT OR REPLACE INTO group_settings (chat_id, flood_action) VALUES (?, ?)`).run(chatId, action);
   await sendMessage(chatId, `✅ Flood action set to ${action}.`, msgId);
 }
 
@@ -772,8 +575,8 @@ async function handleSetWelcome(chatId, userId, text, msgId) {
     await sendMessage(chatId, "❌ Admin only.", msgId);
     return;
   }
-  db.prepare(`INSERT OR REPLACE INTO group_settings (chat_id, welcome_msg) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET welcome_msg = excluded.welcome_msg`).run(chatId, text);
-  await sendMessage(chatId, `✅ Welcome message set.\nUse @USER for user mention.`, msgId);
+  db.prepare(`INSERT OR REPLACE INTO group_settings (chat_id, welcome_msg) VALUES (?, ?)`).run(chatId, text);
+  await sendMessage(chatId, `✅ Welcome message set. Use @USER to mention.`, msgId);
 }
 
 async function handleSetGoodbye(chatId, userId, text, msgId) {
@@ -781,7 +584,7 @@ async function handleSetGoodbye(chatId, userId, text, msgId) {
     await sendMessage(chatId, "❌ Admin only.", msgId);
     return;
   }
-  db.prepare(`INSERT OR REPLACE INTO group_settings (chat_id, goodbye_msg) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET goodbye_msg = excluded.goodbye_msg`).run(chatId, text);
+  db.prepare(`INSERT OR REPLACE INTO group_settings (chat_id, goodbye_msg) VALUES (?, ?)`).run(chatId, text);
   await sendMessage(chatId, `✅ Goodbye message set.`, msgId);
 }
 
@@ -789,5 +592,132 @@ async function handleId(chatId, userId, msgId) {
   await sendMessage(chatId, `🆔 Your ID: \`${userId}\`\n📢 Chat ID: \`${chatId}\``, msgId, "Markdown");
 }
 
-// ============ FILTER CHECKER ============
-async function checkFilters(chatId, text, reply
+async function checkFilters(chatId, text, replyId) {
+  const filters = db.prepare(`SELECT keyword, response FROM filters WHERE chat_id = ?`).all(chatId);
+  for (const filter of filters) {
+    if (text.toLowerCase().includes(filter.keyword)) {
+      await sendMessage(chatId, filter.response, replyId);
+      return true;
+    }
+  }
+  return false;
+}
+
+async function handleNewMember(chatId, newMember) {
+  updateStat('total_groups');
+  const settings = db.prepare(`SELECT welcome_msg FROM group_settings WHERE chat_id = ?`).get(chatId);
+  if (settings?.welcome_msg) {
+    let msg = settings.welcome_msg.replace(/@USER/g, `[${newMember.first_name}](tg://user?id=${newMember.id})`);
+    await sendMessage(chatId, msg, null, "Markdown");
+  }
+}
+
+let offset = 0;
+
+async function handleMessage(message) {
+  if (!message || !message.text || !message.chat) return;
+  
+  const chatId = message.chat.id;
+  const userId = message.from?.id;
+  const msgId = message.message_id;
+  const text = message.text.trim();
+  
+  if (message.from?.is_bot && !text.startsWith('/')) return;
+  
+  if (userId && !isSudo(userId) && !await isAdmin(chatId, userId)) {
+    const flooded = await checkFlood(chatId, userId);
+    if (flooded) return;
+  }
+  
+  await checkFilters(chatId, text, msgId);
+  
+  if (message.chat.type === "private") {
+    const amount = extractAmount(text);
+    if (amount && amount > 0 && !text.startsWith('/')) {
+      await handleFee(chatId, amount, msgId);
+      return;
+    }
+  }
+  
+  let cmd = text.toLowerCase();
+  let param = "";
+  if (text.startsWith('/')) {
+    const parts = text.split(/\s+/);
+    cmd = parts[0].toLowerCase();
+    param = parts.slice(1).join(" ");
+  }
+  
+  let targetId = userId;
+  if (message.reply_to_message?.from) {
+    targetId = message.reply_to_message.from.id;
+  } else {
+    const match = param.match(/(\d+)/);
+    if (match) targetId = parseInt(match[1]);
+  }
+  
+  switch (cmd) {
+    case '/start': await handleStart(chatId, userId, msgId); break;
+    case '/help': await handleHelp(chatId, userId, msgId); break;
+    case '/fee': case '/fees': case '/calc': await handleFee(chatId, extractAmount(param), msgId); break;
+    case '/owner': await handleOwnerPanel(chatId, userId, msgId); break;
+    case '/broadcast': await handleBroadcast(chatId, userId, param, msgId); break;
+    case '/stats': await handleStats(chatId, userId, msgId); break;
+    case '/sudo': await handleSudo(chatId, userId, param.split(' ')[0], param.split(' ')[1], msgId); break;
+    case '/globalban': await handleGlobalBan(chatId, userId, param.split(' ')[0], param.split(' ').slice(1).join(' '), msgId); break;
+    case '/globalunban': await handleGlobalUnban(chatId, userId, param, msgId); break;
+    case '/gclist': await handleGroupList(chatId, userId, msgId); break;
+    case '/leave': await handleLeave(chatId, userId, param, msgId); break;
+    case '/restart': await handleRestart(chatId, userId, msgId); break;
+    case '/adminlist': await handleAdminList(chatId, msgId); break;
+    case '/ban': await handleBan(chatId, userId, targetId, param.replace(/^\d+/, '').trim(), msgId); break;
+    case '/kick': await handleKick(chatId, userId, targetId, msgId); break;
+    case '/mute': await handleMute(chatId, userId, targetId, msgId); break;
+    case '/unmute': await handleUnmute(chatId, userId, targetId, msgId); break;
+    case '/warn': await handleWarn(chatId, userId, targetId, param.replace(/^\d+/, '').trim(), msgId); break;
+    case '/warns': await handleWarns(chatId, targetId, msgId); break;
+    case '/resetwarns': await handleResetWarns(chatId, userId, targetId, msgId); break;
+    case '/purge': await handlePurge(chatId, userId, param, msgId); break;
+    case '/filter': 
+      const [kw, ...respParts] = param.split(/\s+/);
+      await handleAddFilter(chatId, userId, kw, respParts.join(" "), msgId);
+      break;
+    case '/filters': await handleListFilters(chatId, msgId); break;
+    case '/stop': await handleStopFilter(chatId, userId, param, msgId); break;
+    case '/settings': await handleSettings(chatId, userId, msgId); break;
+    case '/setflood': await handleSetFlood(chatId, userId, param, msgId); break;
+    case '/setfloodaction': await handleSetFloodAction(chatId, userId, param, msgId); break;
+    case '/setwelcome': await handleSetWelcome(chatId, userId, param, msgId); break;
+    case '/setgoodbye': await handleSetGoodbye(chatId, userId, param, msgId); break;
+    case '/id': await handleId(chatId, userId, msgId); break;
+  }
+}
+
+async function poll() {
+  while (true) {
+    try {
+      const updates = await telegram("getUpdates", { offset, timeout: 50, allowed_updates: ["message"] });
+      for (const update of updates) {
+        offset = update.update_id + 1;
+        if (update.message) {
+          if (update.message.new_chat_members) {
+            for (const member of update.message.new_chat_members) {
+              await handleNewMember(update.message.chat.id, member);
+            }
+          }
+          await handleMessage(update.message);
+        }
+      }
+    } catch (error) {
+      console.error(error.message);
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+}
+
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("SHAYAMxESCROW Bot is running");
+});
+server.listen(PORT, () => console.log(`Server on port ${PORT}`));
+
+poll().catch(
